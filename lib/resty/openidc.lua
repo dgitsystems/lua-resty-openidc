@@ -494,6 +494,9 @@ local function openidc_logout(opts, session)
     if opts.relative_redirect == "yes" then
       endpoint_url = endpoint_url:gsub("^https?://[^/]+", "")
     end
+    if opts.pass_args_to_logout_endpoint == "yes" and ngx.var.args then
+      endpoint_url = endpoint_url .. ngx.var.is_args .. ngx.var.args
+    end
     return ngx.redirect(endpoint_url)
   elseif opts.discovery.ping_end_session_endpoint then
     return ngx.redirect(opts.discovery.ping_end_session_endpoint)
