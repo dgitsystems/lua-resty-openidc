@@ -135,8 +135,12 @@ end
 
 -- assemble the redirect_uri
 local function openidc_get_redirect_uri(opts)
-  local scheme = opts.redirect_uri_scheme or ngx.req.get_headers()['X-Forwarded-Proto'] or ngx.var.scheme
-  return scheme.."://"..ngx.var.http_host..opts.redirect_uri_path
+  if opts.relative_redirect ~= "yes" then
+    local scheme = opts.redirect_uri_scheme or ngx.req.get_headers()['X-Forwarded-Proto'] or ngx.var.scheme
+    return scheme.."://"..ngx.var.http_host..opts.redirect_uri_path
+  else
+    return opts.redirect_uri_path
+  end
 end
 
 -- perform base64url decoding
@@ -188,7 +192,11 @@ local function openidc_authorize(opts, session, target_url)
   session:save()
 
   -- redirect to the /authorization endpoint
-  return ngx.redirect(opts.discovery.authorization_endpoint.."?"..ngx.encode_args(params))
+  if opts.relative_redirect ~= "yes" then
+    return ngx.redirect(opts.discovery.authorization_endpoint.."?"..ngx.encode_args(params))
+  else
+    return ngx.redirect(opts.discovery.authorization_endpoint:gsub("^https?://[^/]+", "") .."?"..ngx.encode_args(params))
+  end
 end
 
 -- parse the JSON result from a call to the OP
@@ -482,7 +490,11 @@ local function openidc_logout(opts, session)
     ngx.exit(ngx.OK)
     return
   elseif opts.discovery.end_session_endpoint then
-    return ngx.redirect(opts.discovery.end_session_endpoint)
+    local endpoint_url = opts.discovery.end_session_endpoint
+    if opts.relative_redirect == "yes" then
+      endpoint_url = endpoint_url:gsub("^https?://[^/]+", "")
+    end
+    return ngx.redirect(endpoint_url)
   elseif opts.discovery.ping_end_session_endpoint then
     return ngx.redirect(opts.discovery.ping_end_session_endpoint)
   end

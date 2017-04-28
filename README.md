@@ -101,7 +101,10 @@ http {
              --redirect_uri_scheme = "https",
              --logout_path = "/logout",
              --token_endpoint_auth_method = ["client_secret_basic"|"client_secret_post"],
-             --ssl_verify = "no"
+             --ssl_verify = "no",
+
+             -- modify redirects generated from the discovery url to be relative (https://idp.domain.com/auth/ would become /auth/), this also keeps redirect_uri_path as a relative url
+             --relative_redirect = "no"
           }
 
           -- call authenticate for OpenID Connect user authentication
