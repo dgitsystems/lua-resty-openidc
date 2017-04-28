@@ -103,6 +103,9 @@ http {
              --token_endpoint_auth_method = ["client_secret_basic"|"client_secret_post"],
              --ssl_verify = "no",
 
+             -- override resty.session options (example: make seperate sessions/cookies per realm based on the $realm variable set in the location blocks of nginx.conf)
+             --session_opts = {name = "s_" .. ngx.var.realm},
+
              -- args passed to the logout_path url will be included in the redirect to the end_session_endpoint url (with Keycloak this allows you to control the post logout redirect by linking to logout_path?redirect_uri=/farewell.html)
              --pass_args_to_logout_endpoint = "no",
 
