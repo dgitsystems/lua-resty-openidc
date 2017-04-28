@@ -103,6 +103,11 @@ http {
              --token_endpoint_auth_method = ["client_secret_basic"|"client_secret_post"],
              --ssl_verify = "no",
 
+             -- save refresh token and check if the access token needs to be refreshed during authenticate()
+             --refresh_access_token = "no",
+             -- how soon to try and refresh the token, this should be a value above 0 but less than 1 (0.5 would make it refresh the token during a request received after the access token's half life)
+             --refresh_ttl_factor = 0.75,
+
              -- override resty.session options (example: make seperate sessions/cookies per realm based on the $realm variable set in the location blocks of nginx.conf)
              --session_opts = {name = "s_" .. ngx.var.realm},
 

@@ -284,6 +284,51 @@ local function openidc_call_userinfo_endpoint(opts, access_token)
   return openidc_parse_json_response(res)
 end
 
+-- get a new token and save to session
+local function openidc_get_token(opts, session, body)
+  -- make the call to the token endpoint
+  local json, err = openidc_call_token_endpoint(opts, opts.discovery.token_endpoint, body, opts.token_endpoint_auth_method)
+  if err then
+    return nil, err
+  end
+
+  -- process the token endpoint response with the id_token and access_token
+  local enc_hdr, enc_pay, enc_sign = string.match(json.id_token, '^(.+)%.(.+)%.(.+)$')
+  local jwt = openidc_base64_url_decode(enc_pay)
+  local id_token = cjson.decode(jwt)
+
+  -- validate the id_token contents
+  if openidc_validate_id_token(opts, id_token, session.data.nonce) == false then
+    err = "id_token validation failed"
+    return nil, err
+  end
+
+  -- call the user info endpoint
+  local user, err = openidc_call_userinfo_endpoint(opts, json.access_token)
+  if err then
+    return nil, err
+  end
+
+  -- update the tokens in the session
+  session:start()
+  session.data.user = user
+  session.data.id_token = id_token
+  session.data.enc_id_token = json.id_token
+  session.data.access_token = json.access_token
+  if opts.refresh_access_token == "yes" then
+    session.data.refresh_token = json.refresh_token
+    -- refresh again before the access token expires to avoid passing tokens that are about to expire to backends
+    session.data.refresh_after = ngx.time() + json.expires_in * (opts.refresh_ttl_factor or 0.75)
+    session.data.refresh_exp = ngx.time() + json.refresh_expires_in
+    ngx.log(ngx.DEBUG, "setting refresh time to ", session.data.refresh_after - ngx.time(), " seconds from now, access token is valid for ".. json.expires_in .." seconds and refresh token is valid for ".. json.refresh_expires_in .." seconds")
+  end
+
+  -- save the session with the obtained id_token
+  session:save()
+
+  return json, err
+end
+
 -- handle a "code" authorization response from the OP
 local function openidc_authorization_response(opts, session)
   local args = ngx.req.get_uri_args()
@@ -324,35 +369,11 @@ local function openidc_authorization_response(opts, session)
     state = session.data.state
   }
 
-  -- make the call to the token endpoint
-  local json, err = openidc_call_token_endpoint(opts, opts.discovery.token_endpoint, body, opts.token_endpoint_auth_method)
+  -- get token and setup session
+  local json, err = openidc_get_token(opts, session, body)
   if err then
     return nil, err, session.data.original_url
   end
-
-  -- process the token endpoint response with the id_token and access_token
-  local enc_hdr, enc_pay, enc_sign = string.match(json.id_token, '^(.+)%.(.+)%.(.+)$')
-  local jwt = openidc_base64_url_decode(enc_pay)
-  local id_token = cjson.decode(jwt)
-
-  -- validate the id_token contents
-  if openidc_validate_id_token(opts, id_token, session.data.nonce) == false then
-    err = "id_token validation failed"
-    return nil, err, session.data.original_url
-  end
-
-  -- call the user info endpoint
-  -- TODO: should this error be checked?
-  local user, err = openidc_call_userinfo_endpoint(opts, json.access_token)
-
-  session:start()
-  session.data.user = user
-  session.data.id_token = id_token
-  session.data.enc_id_token = json.id_token
-  session.data.access_token = json.access_token
-
-  -- save the session with the obtained id_token
-  session:save()
 
   -- redirect to the URL that was accessed originally
   return ngx.redirect(session.data.original_url)
@@ -544,6 +565,50 @@ local function openidc_get_token_auth_method(opts)
   return result
 end
 
+local function openidc_refresh_token(opts, session)
+  local json, err
+
+  -- check we have a refresh token
+  if not session.data.refresh_token then
+    err = "no refresh token found, unable to refresh"
+    ngx.log(ngx.ERR, err)
+    return nil, err
+  end
+
+  -- dont refresh if it is not necessary
+  if session.data.refresh_after > ngx.time() then
+    ngx.log(ngx.DEBUG, "not refreshing token yet, current time ", ngx.time(), " is less than refresh time ", session.data.refresh_after)
+    return true
+  end
+
+  -- check for an expired refresh token
+  if session.data.refresh_exp < ngx.time() then
+    err = "refresh token expired at ".. session.data.refresh_exp .." which is before the current time ".. ngx.time()
+    ngx.log(ngx.DEBUG, err)
+    return nil, err
+  end
+
+  -- assemble the parameters to the token endpoint
+  local body = {
+    grant_type = "refresh_token",
+    refresh_token = session.data.refresh_token
+  }
+  if opts.client_id then
+    body.client_id=opts.client_id
+  end
+  if opts.client_secret then
+    body.client_secret=opts.client_secret
+  end
+
+  -- get new token and update session
+  local json, err = openidc_get_token(opts, session, body)
+  if err then
+    return nil, err
+  end
+
+  return json, err
+end
+
 -- main routine for OpenID Connect user authentication
 function openidc.authenticate(opts, target_url)
 
@@ -582,6 +647,16 @@ function openidc.authenticate(opts, target_url)
   -- see if this is a request to logout
   if path == (opts.logout_path and opts.logout_path or "/logout") then
     return openidc_logout(opts, session)
+  end
+
+  -- if we have an access_token then check if we need to refresh it (if enabled)
+  if opts.refresh_access_token == "yes" and session.data.access_token then
+    local res, err = openidc_refresh_token(opts, session)
+    if err or not res then
+      -- if refreshing failed for any reason (including expired session) then regenerate and
+      -- flush the session which will cause authenticate() to redirect the user for authorization
+      session:regenerate(true)
+    end
   end
 
   -- if we have no id_token then redirect to the OP for authentication
