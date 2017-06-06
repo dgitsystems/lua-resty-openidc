@@ -114,6 +114,18 @@ http {
              -- args passed to the logout_path url will be included in the redirect to the end_session_endpoint url (with Keycloak this allows you to control the post logout redirect by linking to logout_path?redirect_uri=/farewell.html)
              --pass_args_to_logout_endpoint = "no",
 
+             -- if authorization response fails (bad state, no session etc) then start authentication process again instead of returning error
+             --reauthenticate_on_failure = "no",
+
+             -- how many times to attempt reauthentication before returning an error (to avoid redirect loops)
+             --max_auth_retries = 3,
+
+             -- add target url into the redirect_uri, when used in combination with the reauthenticate_on_failure this allows us to gracefully recover from authorization response failures when there is no session present
+             --add_target_url_to_redirect_uri = "no",
+
+             -- return a 401 (unauthorized) response instead of redirecting unauthenticated POST requests to login page
+             --dont_redirect_post_requests = "no",
+
              -- modify redirects generated from the discovery url to be relative (https://idp.domain.com/auth/ would become /auth/), this also keeps redirect_uri_path as a relative url
              --relative_redirect = "no"
           }

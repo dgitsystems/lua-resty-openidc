@@ -134,13 +134,16 @@ local function openidc_validate_id_token(opts, id_token, nonce)
 end
 
 -- assemble the redirect_uri
-local function openidc_get_redirect_uri(opts)
+local function openidc_get_redirect_uri(opts, target_url)
+  local redirect_uri = opts.redirect_uri_path
   if opts.relative_redirect ~= "yes" then
     local scheme = opts.redirect_uri_scheme or ngx.req.get_headers()['X-Forwarded-Proto'] or ngx.var.scheme
-    return scheme.."://"..ngx.var.http_host..opts.redirect_uri_path
-  else
-    return opts.redirect_uri_path
+    redirect_uri = scheme.."://"..ngx.var.http_host..redirect_uri
   end
+  if opts.add_target_url_to_redirect_uri == "yes" and target_url then
+    redirect_uri = redirect_uri .. "?" .. ngx.encode_args({ target = target_url })
+  end
+  return redirect_uri
 end
 
 -- perform base64url decoding
@@ -174,7 +177,7 @@ local function openidc_authorize(opts, session, target_url)
     client_id=opts.client_id,
     response_type="code",
     scope=opts.scope and opts.scope or "openid email profile",
-    redirect_uri=openidc_get_redirect_uri(opts),
+    redirect_uri=openidc_get_redirect_uri(opts, target_url),
     state=state,
     nonce=nonce
   }
@@ -315,6 +318,7 @@ local function openidc_get_token(opts, session, body)
   session.data.id_token = id_token
   session.data.enc_id_token = json.id_token
   session.data.access_token = json.access_token
+  session.data.retries = 0
   if opts.refresh_access_token == "yes" then
     session.data.refresh_token = json.refresh_token
     -- refresh again before the access token expires to avoid passing tokens that are about to expire to backends
@@ -333,6 +337,12 @@ end
 local function openidc_authorization_response(opts, session)
   local args = ngx.req.get_uri_args()
   local err
+
+  if not session.present then
+    err = "request to the redirect_uri_path but there's no session state found"
+    ngx.log(ngx.ERR, err)
+    return nil, err, nil
+  end
 
   if not args.code or not args.state then
     err = "unhandled request to the redirect_uri: "..ngx.var.request_uri
@@ -365,7 +375,7 @@ local function openidc_authorization_response(opts, session)
   local body = {
     grant_type="authorization_code",
     code=args.code,
-    redirect_uri=openidc_get_redirect_uri(opts),
+    redirect_uri=openidc_get_redirect_uri(opts, session.data.original_url),
     state = session.data.state
   }
 
@@ -636,12 +646,42 @@ function openidc.authenticate(opts, target_url)
   -- see if this is a request to the redirect_uri i.e. an authorization response
   local path = target_url:match("(.-)%?") or target_url
   if path == opts.redirect_uri_path then
-    if not session.present then
-      err = "request to the redirect_uri_path but there's no session state found"
-      ngx.log(ngx.ERR, err)
-      return nil, err, target_url
+    -- try openidc_authorization_response
+    local resp, err, original_url = openidc_authorization_response(opts, session)
+
+    -- if openidc_authorization_response succeeded then it would have sent an ngx.redirect, if we get this far then something went wrong
+    -- if reauthenticate_on_failure isnt enabled then return the response immediately
+    -- if we've retried too many times already then dont attempt reauthentication and instead reset retry count back to 0 and return an error
+    local max_auth_retries = opts.max_auth_retries or 3
+    if opts.reauthenticate_on_failure ~= "yes" or (session.data.retries and session.data.retries >= max_auth_retries) then
+      ngx.log(ngx.ERR, "authorization response failed, returning error (retry: ", session.data.retries, "/", max_auth_retries, ")")
+      session.data.retries = 0
+      session:save()
+      return resp, err, original_url
     end
-    return openidc_authorization_response(opts, session)
+
+    -- authorization failed for some reason (no session, invalid session due to state mismatch etc), retry rauthentication if target url can be determined
+    if target_url ~= ngx.var.request_uri then
+      err = "authorization response on redirect_uri_path failed, re-auth to target_url provided to authenticate(): " .. target_url
+    elseif ngx.var.arg_target then
+      target_url = ngx.unescape_uri(ngx.var.arg_target)
+      err = "authorization response on redirect_uri_path failed, re-auth to target_url from target arg: " .. target_url
+    elseif session.data.original_url then
+      target_url = session.data.original_url
+      err = "authorization response on redirect_uri_path failed, re-auth to target_url from session original_url: " .. target_url
+    else
+      ngx.log(ngx.ERR, "authorization response on redirect_uri_path failed, cannot re-auth as no target_url could be determined")
+      return resp, err, original_url
+    end
+
+    -- if there is already a token in this session then redirect back to target url as the client may have logged in from another tab
+    if session.data.id_token then
+      ngx.redirect(target_url)
+    end
+
+    -- if we reach here then we're re-authing so increment retry count
+    session.data.retries = (session.data.retries or 0) + 1
+    ngx.log(ngx.ERR, err)
   end
 
   -- see if this is a request to logout
@@ -661,6 +701,10 @@ function openidc.authenticate(opts, target_url)
 
   -- if we have no id_token then redirect to the OP for authentication
   if not session.present or not session.data.id_token then
+    if opts.dont_redirect_post_requests == "yes" and ngx.var.request_method == "POST" then
+      -- return a 401 instead of redirecting POST requests
+      ngx.exit(ngx.HTTP_UNAUTHORIZED)
+    end
     return openidc_authorize(opts, session, target_url)
   end
 
