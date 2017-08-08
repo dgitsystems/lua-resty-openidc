@@ -701,8 +701,8 @@ function openidc.authenticate(opts, target_url)
 
   -- if we have no id_token then redirect to the OP for authentication
   if not session.present or not session.data.id_token then
-    if opts.dont_redirect_post_requests == "yes" and ngx.var.request_method == "POST" then
-      -- return a 401 instead of redirecting POST requests
+    if opts.redirect_to_auth == "no" then
+      -- return a 401 instead of setting up session and redirecting to authorization endpoint
       ngx.exit(ngx.HTTP_UNAUTHORIZED)
     end
     return openidc_authorize(opts, session, target_url)

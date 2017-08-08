@@ -123,8 +123,10 @@ http {
              -- add target url into the redirect_uri, when used in combination with the reauthenticate_on_failure this allows us to gracefully recover from authorization response failures when there is no session present
              --add_target_url_to_redirect_uri = "no",
 
-             -- return a 401 (unauthorized) response instead of redirecting unauthenticated POST requests to login page
-             --dont_redirect_post_requests = "no",
+             -- set to "no" to return a 401 (unauthorized) response instead of redirecting unauthenticated requests to login page
+             --redirect_to_auth = "yes",
+             -- example: make it so you can override this setting from the nginx config and disable redirect for POST requests
+             --redirect_to_auth = ngx.var.redirect_to_auth or ngx.var.request_method == "POST" and "no" or "yes",
 
              -- modify redirects generated from the discovery url to be relative (https://idp.domain.com/auth/ would become /auth/), this also keeps redirect_uri_path as a relative url
              --relative_redirect = "no"
