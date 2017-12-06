@@ -312,6 +312,17 @@ local function openidc_get_token(opts, session, body)
     return nil, err
   end
 
+  -- ensure session_state exists in the token and set the nginx cookie/session id to match the Keycloak session id
+  local oldsession = session.id
+  if json.session_state then
+    session.id = json.session_state
+    ngx.log(ngx.DEBUG, "set session.id = ", ngx.encode_base64(session.id))
+  else
+    err = "unable to get session_state from token"
+    ngx.log(ngx.ERR, err)
+    return nil, err
+  end
+
   -- update the tokens in the session
   session:start()
   session.data.user = user
@@ -329,6 +340,14 @@ local function openidc_get_token(opts, session, body)
 
   -- save the session with the obtained id_token
   session:save()
+
+  -- destroy the old session if we changed session id
+  if oldsession and oldsession ~= "" and oldsession ~= session.id then
+    session.storage:destroy(oldsession)
+    ngx.log(ngx.DEBUG, "removing old session with id: ", ngx.encode_base64(oldsession))
+  else
+    ngx.log(ngx.DEBUG, "session id unchanged or old session id unknown, not removing old session")
+  end
 
   return json, err
 end
