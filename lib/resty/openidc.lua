@@ -315,12 +315,23 @@ local function openidc_get_token(opts, session, body)
   -- ensure session_state exists in the token and set the nginx cookie/session id to match the Keycloak session id
   local oldsession = session.id
   if json.session_state then
-    session.id = json.session_state
-    ngx.log(ngx.DEBUG, "set session.id = ", ngx.encode_base64(session.id))
+    if opts.leave_session_id ~= true then
+      session.id = json.session_state
+      ngx.log(ngx.DEBUG, "set session.id = ", ngx.encode_base64(session.id))
+    end
   else
     err = "unable to get session_state from token"
     ngx.log(ngx.ERR, err)
     return nil, err
+  end
+
+  -- make the session expire when the token expires
+  if opts.refresh_access_token == "yes" and json.refresh_expires_in then
+    if json.refresh_expires_in > 0 then
+      session.cookie.lifetime = json.refresh_expires_in
+    end
+  elseif json.expires_in and json.expires_in > 0 then
+    session.cookie.lifetime = json.expires_in
   end
 
   -- update the tokens in the session
@@ -334,7 +345,11 @@ local function openidc_get_token(opts, session, body)
     session.data.refresh_token = json.refresh_token
     -- refresh again before the access token expires to avoid passing tokens that are about to expire to backends
     session.data.refresh_after = ngx.time() + json.expires_in * (opts.refresh_ttl_factor or 0.75)
-    session.data.refresh_exp = ngx.time() + json.refresh_expires_in
+    if json.refresh_expires_in == 0 then
+      session.data.refresh_exp = 0
+    else
+      session.data.refresh_exp = ngx.time() + json.refresh_expires_in
+    end
     ngx.log(ngx.DEBUG, "setting refresh time to ", session.data.refresh_after - ngx.time(), " seconds from now, access token is valid for ".. json.expires_in .." seconds and refresh token is valid for ".. json.refresh_expires_in .." seconds")
   end
 
@@ -611,7 +626,7 @@ local function openidc_refresh_token(opts, session)
   end
 
   -- check for an expired refresh token
-  if session.data.refresh_exp < ngx.time() then
+  if session.data.refresh_exp > 0 and session.data.refresh_exp < ngx.time() then
     err = "refresh token expired at ".. session.data.refresh_exp .." which is before the current time ".. ngx.time()
     ngx.log(ngx.DEBUG, err)
     return nil, err
@@ -622,12 +637,35 @@ local function openidc_refresh_token(opts, session)
     grant_type = "refresh_token",
     refresh_token = session.data.refresh_token
   }
-  if opts.client_id then
-    body.client_id=opts.client_id
+
+  ngx.log(ngx.DEBUG, "refreshing token for session ", session.id, " from request ", ngx.var.request_id, ": ", ngx.var.request_uri)
+
+  -- get new token and update session
+  local json, err = openidc_get_token(opts, session, body)
+  if err then
+    return nil, err
   end
-  if opts.client_secret then
-    body.client_secret=opts.client_secret
+
+  return json, err
+end
+
+function openidc.get_token_from_basic_auth(opts, session)
+  if not ngx.var.remote_user or not ngx.var.remote_passwd then
+    local err = "basic authorization header is not set or not valid"
+    ngx.log(ngx.ERR, err)
+    return nil, err
   end
+
+  -- assemble the parameters to the token endpoint
+  local body = {
+    grant_type = "password",
+    username = ngx.var.remote_user,
+    password = ngx.var.remote_passwd,
+    scope = opts.scope and opts.scope or "openid email profile"
+  }
+
+  session.id = ngx.var.remote_user
+  ngx.log(ngx.DEBUG, "fetching token using credentials from basic authorization header for user ", session.id, " from request ", ngx.var.request_id, ": ", ngx.var.request_uri)
 
   -- get new token and update session
   local json, err = openidc_get_token(opts, session, body)
@@ -642,8 +680,6 @@ end
 function openidc.authenticate(opts, target_url)
 
   local err
-
-  local session = require("resty.session").open(opts.session_opts)
 
   local target_url = target_url or ngx.var.request_uri
 
@@ -661,6 +697,100 @@ function openidc.authenticate(opts, target_url)
 
   -- set the authentication method for the token endpoint
   opts.token_endpoint_auth_method = openidc_get_token_auth_method(opts)
+
+  -- if basic_auth is enabled and standard_flow has not been explicitly enabled then disable standard_flow
+  if (opts.basic_auth == true or opts.basic_auth_legacy == true) and opts.standard_flow == nil then
+    opts.standard_flow = false
+  end
+
+  -- attempt authentication using basic authorization header if basic_auth has been enabled and header is present
+  local session, valid
+  if (opts.basic_auth == true or opts.basic_auth_legacy == true) and ngx.var.remote_user and ngx.var.remote_passwd then
+    -- if basic_auth_legacy has been enabled and the username has an @ in it then attempt legacy basic auth
+    if opts.basic_auth_legacy == true and ngx.var.remote_user:find("@") then
+      if type(opts.basic_legacy_session_opts) == "table" then
+        opts.basic_legacy_session_opts.basic = true
+        opts.basic_legacy_session_opts.raw_hmac = true
+        opts.basic_legacy_session_opts.check = { hmac = false }
+      else
+        opts.basic_legacy_session_opts = {
+          basic = true,
+          raw_hmac = true,
+          check = {
+            hmac = false
+          }
+        }
+      end
+
+      ngx.log(ngx.DEBUG, "attempting legacy basic auth")
+      session, valid = require("resty.session").open(opts.basic_legacy_session_opts)
+
+      opts.leave_session_id = true
+
+      -- check if we need to refresh the token
+      if session and opts.refresh_access_token == "yes" then
+        local res, err = openidc_refresh_token(opts, session)
+        if err or not res then
+          valid = false
+        else
+          opts.refresh_access_token = "no"
+        end
+      end
+
+      -- if a session isn't present or bad password (might have been changed) then attempt to setup a new session using the provided credentials (if it fails to setup a new session the old one will remain untouched)
+      if not session or not valid then
+        local json, err = openidc.get_token_from_basic_auth(opts, session)
+        if not err then
+          session, valid = require("resty.session").open(opts.basic_legacy_session_opts)
+          opts.refresh_access_token = "no"
+        end
+      end
+
+      opts.leave_session_id = nil
+    elseif opts.basic_auth == true then
+      if type(opts.basic_session_opts) == "table" then
+        opts.basic_session_opts.basic = true
+        opts.basic_session_opts.check = {
+          ssi = false,
+          ua = false,
+          scheme = false,
+          addr = false
+        }
+      else
+        opts.basic_session_opts = {
+          basic = true,
+          check = {
+            ssi = false,
+            ua = false,
+            scheme = false,
+            addr = false
+          }
+        }
+      end
+
+      ngx.log(ngx.DEBUG, "attempting basic auth")
+      session, valid = require("resty.session").open(opts.basic_session_opts)
+    end
+  end
+
+  -- if basic auth didnt succeed (or isnt even enabled) then try standard authorization code flow if standard_flow is enabled
+  if not session or not valid then
+    if opts.standard_flow ~= false then
+      ngx.log(ngx.DEBUG, "attempting standard auth flow")
+      session, valid = require("resty.session").open(opts.session_opts)
+    else
+      if opts.basic_auth == true or opts.basic_auth_legacy == true then
+        ngx.status = ngx.HTTP_UNAUTHORIZED
+        ngx.header["Content-type"] = "text/html"
+        ngx.header["WWW-Authenticate"] = 'Basic realm="' .. ngx.var.realm .. '"'
+        ngx.say("No valid Authorization header found and standard flow authentication disabled")
+        ngx.exit(ngx.HTTP_OK)
+      else
+        ngx.log(ngx.ERR, "No valid authentication method enabled: standard_flow=", opts.standard_flow, " basic_auth=", opts.basic_auth, " basic_auth_legacy=", opts.basic_auth_legacy)
+        ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+      end
+    end
+  end
 
   -- see if this is a request to the redirect_uri i.e. an authorization response
   local path = target_url:match("(.-)%?") or target_url
@@ -720,8 +850,14 @@ function openidc.authenticate(opts, target_url)
 
   -- if we have no id_token then redirect to the OP for authentication
   if not session.present or not session.data.id_token then
-    if opts.redirect_to_auth == "no" then
+    if opts.redirect_to_auth == "no" or opts.standard_flow == false then
       -- return a 401 instead of setting up session and redirecting to authorization endpoint
+      if opts.basic_auth == true or opts.basic_auth_legacy == true then
+        ngx.status = ngx.HTTP_UNAUTHORIZED
+        ngx.header["Content-type"] = "text/html"
+        ngx.header["WWW-Authenticate"] = 'Basic realm="' .. ngx.var.realm .. '"'
+        ngx.say("Unauthorized")
+      end
       ngx.exit(ngx.HTTP_UNAUTHORIZED)
     end
     return openidc_authorize(opts, session, target_url)
