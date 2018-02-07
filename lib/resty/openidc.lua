@@ -725,10 +725,11 @@ function openidc.authenticate(opts, target_url)
       ngx.log(ngx.DEBUG, "attempting legacy basic auth")
       session, valid = require("resty.session").open(opts.basic_legacy_session_opts)
 
+      local leave_session_id = opts.leave_session_id
       opts.leave_session_id = true
 
       -- check if we need to refresh the token
-      if session and opts.refresh_access_token == "yes" then
+      if session and valid and opts.refresh_access_token == "yes" then
         local res, err = openidc_refresh_token(opts, session)
         if err or not res then
           valid = false
@@ -746,7 +747,7 @@ function openidc.authenticate(opts, target_url)
         end
       end
 
-      opts.leave_session_id = nil
+      opts.leave_session_id = leave_session_id
     elseif opts.basic_auth == true then
       if type(opts.basic_session_opts) == "table" then
         opts.basic_session_opts.basic = true
@@ -770,6 +771,16 @@ function openidc.authenticate(opts, target_url)
 
       ngx.log(ngx.DEBUG, "attempting basic auth")
       session, valid = require("resty.session").open(opts.basic_session_opts)
+
+      -- check if we need to refresh the token
+      if session and valid then
+        local res, err = openidc_refresh_token(opts, session)
+        if err or not res then
+          valid = false
+        else
+          opts.refresh_access_token = "no"
+        end
+      end
     end
   end
 
