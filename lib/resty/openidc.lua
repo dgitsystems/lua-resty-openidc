@@ -640,6 +640,9 @@ local function openidc_refresh_token(opts, session)
 
   ngx.log(ngx.DEBUG, "refreshing token for session ", session.id, " from request ", ngx.var.request_id, ": ", ngx.var.request_uri)
 
+  -- remove nonce from session to skip validating it in token refreshes, it's only necessary during initial signin
+  session.data.nonce = nil
+
   -- get new token and update session
   local json, err = openidc_get_token(opts, session, body)
   if err then
