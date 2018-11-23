@@ -187,6 +187,11 @@ local function openidc_authorize(opts, session, target_url)
     for k,v in pairs(opts.authorization_params) do params[k] = v end
   end
 
+  -- Safari on iOS 12 and macOS Mojave wont send cookies when SameSite cookie parameter is set to Lax and IDP is on another domain
+  if session.cookie.samesite and opts.relative_redirect ~= "yes" then
+    session.cookie.samesite = false
+  end
+
   -- store state in the session
   session:start()
   session.data.original_url = target_url
@@ -412,6 +417,12 @@ local function openidc_authorization_response(opts, session)
     redirect_uri=openidc_get_redirect_uri(opts, session.data.original_url),
     state = session.data.state
   }
+
+  -- Safari on iOS 12 and macOS Mojave wont send cookies when SameSite cookie parameter is set to Lax and IDP is on another domain
+  if session.cookie.samesite and opts.relative_redirect ~= "yes" then
+    session.cookie.samesite = false
+    session.data.initcookie = true
+  end
 
   -- get token and setup session
   local json, err = openidc_get_token(opts, session, body)
@@ -879,6 +890,25 @@ function openidc.authenticate(opts, target_url)
 
   -- log id_token contents
   ngx.log(ngx.DEBUG, "id_token=", cjson.encode(session.data.id_token))
+
+  -- if SameSite was disabled and this is the first time the cookie has been used after session initialization then check the request and send a new cookie
+  if session.data.initcookie == true then
+    -- SameSite has not been applied to this session yet so only accept GET or HEAD requests
+    if ngx.var.request_method ~= "GET" and ngx.var.request_method ~= "HEAD" then
+      ngx.log(ngx.ERR, "initcookie is true, denying request to request_uri (" ..ngx.var.request_uri.. ") as the request method (" ..ngx.var.request_method.. ") is not allowed for an initcookie: request_id=" ..ngx.var.request_id)
+      ngx.exit(ngx.HTTP_NOT_ALLOWED)
+    end
+
+    -- if the request is to the original URL then resend the cookie
+    if ngx.var.request_uri == session.data.original_url then
+      ngx.log(ngx.DEBUG, "initcookie is true, resending cookie: request_method=" ..ngx.var.request_method.. " request_uri=" ..ngx.var.request_uri.. " original_url=" ..session.data.original_url.. " request_id=" ..ngx.var.request_id)
+      session.data.initcookie = nil
+      session:save()
+    else
+      ngx.log(ngx.ERR, "initcookie is true, denying request to request_uri (" ..ngx.var.request_uri.. ") as it does not match original_url in session (" ..session.data.original_url.. "): request_id=" ..ngx.var.request_id)
+      ngx.exit(ngx.HTTP_UNAUTHORIZED)
+    end
+  end
 
   -- return the id_token to the caller Lua script for access control purposes
   return
