@@ -200,6 +200,7 @@ local function openidc_authorize(opts, session, target_url)
   session:save()
 
   -- redirect to the /authorization endpoint
+  ngx.header["Cache-Control"] = "no-cache, no-store, max-age=0"
   if opts.relative_redirect ~= "yes" then
     return ngx.redirect(opts.discovery.authorization_endpoint.."?"..ngx.encode_args(params))
   else
