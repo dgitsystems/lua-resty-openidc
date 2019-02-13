@@ -188,7 +188,7 @@ local function openidc_authorize(opts, session, target_url)
   end
 
   -- Safari on iOS 12 and macOS Mojave wont send cookies when SameSite cookie parameter is set to Lax and IDP is on another domain
-  if session.cookie.samesite and opts.relative_redirect ~= "yes" then
+  if session.cookie.samesite and opts.disable_samesite_during_auth == "yes" then
     session.cookie.samesite = false
   end
 
@@ -420,7 +420,7 @@ local function openidc_authorization_response(opts, session)
   }
 
   -- Safari on iOS 12 and macOS Mojave wont send cookies when SameSite cookie parameter is set to Lax and IDP is on another domain
-  if session.cookie.samesite and opts.relative_redirect ~= "yes" then
+  if session.cookie.samesite and opts.disable_samesite_during_auth == "yes" then
     session.cookie.samesite = false
     session.data.initcookie = true
   end
