@@ -139,6 +139,13 @@ local function openidc_get_redirect_uri(opts, target_url)
   if opts.relative_redirect ~= "yes" then
     local scheme = opts.redirect_uri_scheme or ngx.req.get_headers()['X-Forwarded-Proto'] or ngx.var.scheme
     redirect_uri = scheme.."://"..ngx.var.http_host..redirect_uri
+  else
+    local redirect_uri_base = opts.redirect_uri_base or opts.discovery.authorization_endpoint_base
+    if not redirect_uri_base then
+      ngx.log(ngx.ERR, "redirect_uri_base not set and authorization_endpoint_base not determined from authorization_endpoint during discovery, one of these must be defined when using relative_redirect")
+      ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+    end
+    redirect_uri = redirect_uri_base..redirect_uri
   end
   if opts.add_target_url_to_redirect_uri == "yes" and target_url then
     redirect_uri = redirect_uri .. "?" .. ngx.encode_args({ target = target_url })
@@ -204,7 +211,7 @@ local function openidc_authorize(opts, session, target_url)
   if opts.relative_redirect ~= "yes" then
     return ngx.redirect(opts.discovery.authorization_endpoint.."?"..ngx.encode_args(params))
   else
-    return ngx.redirect(opts.discovery.authorization_endpoint:gsub("^https?://[^/]+", "") .."?"..ngx.encode_args(params))
+    return ngx.redirect(opts.discovery.authorization_endpoint_path.."?"..ngx.encode_args(params))
   end
 end
 
@@ -458,6 +465,25 @@ local function openidc_discover(url, ssl_verify)
       json, err = openidc_parse_json_response(res)
       if json then
         if string.sub(url, 1, string.len(json['issuer'])) == json['issuer'] then
+          if json['authorization_endpoint'] then
+            local auth_endpoint = json['authorization_endpoint']
+            local auth_endpoint_base_from, auth_endpoint_base_to, auth_endpoint_base_err = ngx.re.find(auth_endpoint, "^(https?://[^/]+)")
+            if auth_endpoint_base_from then
+              json.authorization_endpoint_base = string.sub(auth_endpoint, auth_endpoint_base_from, auth_endpoint_base_to)
+              ngx.log(ngx.DEBUG, "authorization_endpoint_base set to: ", json.authorization_endpoint_base)
+              json.authorization_endpoint_path = string.sub(auth_endpoint, auth_endpoint_base_to+1)
+              ngx.log(ngx.DEBUG, "authorization_endpoint_path set to: ", json.authorization_endpoint_path)
+            else
+              if auth_endpoint_base_err then
+                err = "error parsing base URL from authorization_endpoint: "..auth_endpoint_base_err
+                ngx.log(ngx.ERR, err)
+              end
+              err = "failed to extract base URL from authorization_endpoint: "..auth_endpoint
+              ngx.log(ngx.ERR, err)
+            end
+          else
+            ngx.log(ngx.DEBUG, "authorization_endpoint not found, authorization_endpoint_base will not be set")
+          end
           openidc_cache_set("discovery", url, cjson.encode(json), 24 * 60 * 60)
         else
           err = "issuer field in Discovery data does not match URL"
