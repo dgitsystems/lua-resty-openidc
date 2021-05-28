@@ -286,7 +286,8 @@ local function openidc_call_userinfo_endpoint(opts, access_token)
   local res, err = httpc:request_uri(opts.discovery.userinfo_endpoint, {
     headers = {
       ["Authorization"] = "Bearer "..access_token,
-    }
+    },
+    ssl_verify = (opts.ssl_verify ~= "no")
   })
   if not res then
     err = "accessing userinfo endpoint ("..opts.discovery.userinfo_endpoint..") failed: "..err
