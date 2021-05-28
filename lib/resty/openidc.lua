@@ -137,6 +137,13 @@ end
 local function openidc_get_redirect_uri(opts, target_url)
   local redirect_uri = opts.redirect_uri_path
   if opts.relative_redirect ~= "yes" then
+    -- check ngx.var.host is contained in ngx.var.http_host (note ngx.var.http_host may contain port too)
+    local host_from, host_to, host_err = ngx.re.find(ngx.var.http_host, "^"..ngx.var.host.."(:[0-9]+)?$")
+    if not host_from then
+      ngx.log(ngx.ERR, "rejecting request due to possible host header forgery (host not found in http host header): host=", ngx.var.host, ", http_host=", ngx.var.http_host)
+      ngx.exit(ngx.HTTP_BAD_REQUEST)
+    end
+
     local scheme = opts.redirect_uri_scheme or ngx.req.get_headers()['X-Forwarded-Proto'] or ngx.var.scheme
     redirect_uri = scheme.."://"..ngx.var.http_host..redirect_uri
   else
