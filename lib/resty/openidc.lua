@@ -211,7 +211,12 @@ local function openidc_authorize(opts, session, target_url)
   session.data.original_url = target_url
   session.data.state = state
   session.data.nonce = nonce
-  session:save()
+  local ok, err = session:save()
+  if not ok or err then
+    ngx.log(ngx.ERR, "error storing session for request ", ngx.var.request_id, ": ", err)
+    -- if the session could not be stored then log the error and hard fail here, otherwise itll put the user into a redirect loop
+    ngx.exit(ngx.HTTP_SERVICE_UNAVAILABLE)
+  end
 
   -- redirect to the /authorization endpoint
   ngx.header["Cache-Control"] = "no-cache, no-store, max-age=0"
