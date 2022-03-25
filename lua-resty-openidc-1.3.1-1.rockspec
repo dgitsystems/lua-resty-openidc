@@ -1,8 +1,7 @@
 package = "lua-resty-openidc"
 version = "1.3.1-1"
 source = {
-    url = "git://github.com/pingidentity/lua-resty-openidc",
-    tag = "v1.3.1",
+    url = "git+https://github.com/dgitsystems/lua-resty-openidc",
     dir = "lua-resty-openidc"
 }
 description = {
@@ -25,8 +24,7 @@ dependencies = {
     "lua >= 5.1",
     "lua-resty-http >= 0.08",
     "lua-resty-session >= 2.8",
-    "lua-resty-jwt >= 0.1.5",
-    "lua-resty-hmac"
+    "lua-resty-jwt >= 0.2.0"
 }
 build = {
     type = "builtin",
