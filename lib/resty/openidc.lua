@@ -880,7 +880,7 @@ function openidc.authenticate(opts, target_url)
     -- authorization failed for some reason (no session, invalid session due to state mismatch etc), retry rauthentication if target url can be determined
     if target_url ~= ngx.var.request_uri then
       err = "authorization response on redirect_uri_path failed, re-auth to target_url provided to authenticate(): " .. target_url
-    elseif ngx.var.arg_target then
+    elseif ngx.var.arg_target and opts.add_target_url_to_redirect_uri == "yes" then
       target_url = ngx.unescape_uri(ngx.var.arg_target)
       err = "authorization response on redirect_uri_path failed, re-auth to target_url from target arg: " .. target_url
     elseif session.data.original_url then
