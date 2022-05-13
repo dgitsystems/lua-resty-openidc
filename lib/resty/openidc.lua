@@ -177,6 +177,17 @@ local function openidc_base64_url_encode(input)
   return input:gsub('+','-'):gsub('/','_'):gsub('=','')
 end
 
+local function openidc_combine_uri(uri, params)
+  if params == nil or next(params) == nil then
+    return uri
+  end
+  local sep = "?"
+  if string.find(uri, "?", 1, true) then
+    sep = "&"
+  end
+  return uri .. sep .. ngx.encode_args(params)
+end
+
 -- send the browser of to the OP's authorization endpoint
 local function openidc_authorize(opts, session, target_url)
   local resty_random = require "resty.random"
@@ -595,6 +606,8 @@ local openidc_transparent_pixel = "\137\080\078\071\013\010\026\010\000\000\000\
 
 -- handle logout
 local function openidc_logout(opts, session)
+  local session_token = session.data.enc_id_token
+
   session:destroy()
   local headers = ngx.req.get_headers()
   local header =  headers['Accept']
@@ -610,13 +623,45 @@ local function openidc_logout(opts, session)
     return
   elseif opts.discovery.end_session_endpoint then
     local endpoint_url = opts.discovery.end_session_endpoint
+
+    local params = {}
+    if opts.pass_args_to_logout_endpoint == "yes" and ngx.var.args then
+      params = ngx.req.get_uri_args()
+    end
+
+    if opts.redirect_after_logout_with_id_token_hint and session_token then
+      params["id_token_hint"] = session_token
+    end
+
+    -- if post_logout_redirect_uri is defined in options it will take priority over the post_logout_redirect_uri supplied in the logout request (when pass_args_to_logout_endpoint is enabled)
+    if opts.post_logout_redirect_uri then
+      params["post_logout_redirect_uri"] = opts.post_logout_redirect_uri
+    end
+
+    -- if redirect_after_logout_with_id_token_hint is enabled but id_token_hint is unknown (for example the user is trying to logout when their session has already expired) then unset post_logout_redirect_uri.
+    -- this is to avoid Keycloak throwing a "Missing parameters: id_token_hint" error at the user and make Keycloak fallback to the base URL set in the Keycloak client config instead.
+    if params["post_logout_redirect_uri"] and opts.redirect_after_logout_with_id_token_hint and not session_token then
+      -- if falling back to the client URL is not suitable then enable bypass_end_session_endpoint_on_unknown_session.
+      -- when bypass_end_session_endpoint_on_unknown_session is enabled the redirect via end_session_endpoint will be skipped, providing post_logout_redirect_uri is to the same domain
+      local accepted_redirect_regex = "^"..ngx.var.scheme.."://"..ngx.var.host.."/"
+      if opts.relative_redirect == "yes" then
+        accepted_redirect_regex = "^"..opts.discovery.authorization_endpoint_base.."/"
+      end
+      if opts.bypass_end_session_endpoint_on_unknown_session and ngx.re.find(params["post_logout_redirect_uri"], accepted_redirect_regex) then
+        endpoint_url = params["post_logout_redirect_uri"]
+        params = {}
+        ngx.log(ngx.DEBUG, "redirecting directly to post_logout_redirect_uri due to unknown session on logout request ", ngx.var.request_id)
+      else
+        params["post_logout_redirect_uri"] = nil
+        ngx.log(ngx.DEBUG, "clearing post_logout_redirect_uri due to unknown session on logout request ", ngx.var.request_id)
+      end
+    end
+
     if opts.relative_redirect == "yes" then
       endpoint_url = endpoint_url:gsub("^https?://[^/]+", "")
     end
-    if opts.pass_args_to_logout_endpoint == "yes" and ngx.var.args then
-      endpoint_url = endpoint_url .. ngx.var.is_args .. ngx.var.args
-    end
-    return ngx.redirect(endpoint_url)
+
+    return ngx.redirect(openidc_combine_uri(endpoint_url, params))
   elseif opts.discovery.ping_end_session_endpoint then
     return ngx.redirect(opts.discovery.ping_end_session_endpoint)
   end
