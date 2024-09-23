@@ -412,7 +412,7 @@ local function openidc_authorization_response(opts, session)
   if not session.present then
     err = "request to the redirect_uri_path but there's no session state found"
     ngx.log(ngx.ERR, err)
-    return nil, err, nil
+    return nil, err, ngx.var.default_signin_url or nil
   end
 
   if not args.code or not args.state then
@@ -928,8 +928,8 @@ function openidc.authenticate(opts, target_url)
     elseif ngx.var.arg_target and opts.add_target_url_to_redirect_uri == "yes" then
       target_url = ngx.unescape_uri(ngx.var.arg_target)
       err = "authorization response on redirect_uri_path failed, re-auth to target_url from target arg: " .. target_url
-    elseif session.data.original_url then
-      target_url = session.data.original_url
+    elseif original_url then
+      target_url = original_url
       err = "authorization response on redirect_uri_path failed, re-auth to target_url from session original_url: " .. target_url
     else
       ngx.log(ngx.ERR, "authorization response on redirect_uri_path failed, cannot re-auth as no target_url could be determined")
